@@ -1,0 +1,14 @@
+{
+  "name": "wechat-official-account-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node backend/server.mjs",
+    "build": "node scripts/check.mjs",
+    "build:pages": "node scripts/build-pages.mjs",
+    "start": "node backend/server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

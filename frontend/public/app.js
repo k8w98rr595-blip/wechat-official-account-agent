@@ -1,0 +1,444 @@
+import { runStaticAgentOperation } from "./mock-agent.js";
+
+const DEFAULT_BRAND = {
+  companyName: "", summary: "", targetAudience: "", tone: "专业、清晰、有温度",
+  keyPoints: "", forbiddenTerms: "最、第一、绝对、百分百", defaultCta: "了解详情或预约体验",
+  primaryColor: "#0f766e", accentColor: "#2563eb",
+};
+const EMPTY_WORKSPACE = { schemaVersion: 1, brand: DEFAULT_BRAND, projects: [], activeProjectId: undefined };
+const STATUS_LABELS = { idea: "想法", interview: "访谈", brief: "简报", directions: "提纲", draft: "草稿" };
+const STEPS = ["想法", "营销简报", "标题与提纲", "正文"];
+const DB_NAME = "wechat-content-agent";
+let workspace = structuredClone(EMPTY_WORKSPACE);
+let busy = false;
+let selectedRange;
+let selectedText = "";
+let rewritePreview;
+let saveTimer;
+let staticAgentMode = location.protocol === "file:" || location.hostname.endsWith(".github.io");
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const uid = () => crypto.randomUUID();
+const now = () => new Date().toISOString();
+const escapeHtml = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
+const activeProject = () => workspace.projects.find((project) => project.id === workspace.activeProjectId);
+
+function sanitizeArticleClient(value) {
+  const allowed = new Set(["H1", "H2", "P", "STRONG", "B", "EM", "I", "BLOCKQUOTE", "UL", "OL", "LI", "A", "BR", "HR", "DIV"]);
+  const parsed = new DOMParser().parseFromString(String(value || ""), "text/html");
+  [...parsed.body.querySelectorAll("*")].forEach((element) => {
+    if (!allowed.has(element.tagName)) { element.replaceWith(...element.childNodes); return; }
+    const href = element.tagName === "A" ? element.getAttribute("href") || "" : "";
+    [...element.attributes].forEach((attribute) => element.removeAttribute(attribute.name));
+    if (element.tagName === "A" && /^(https?:|mailto:)/i.test(href)) { element.setAttribute("href", href); element.setAttribute("target", "_blank"); element.setAttribute("rel", "noopener noreferrer"); }
+  });
+  return parsed.body.innerHTML;
+}
+
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("workspace");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadWorkspace() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("workspace", "readonly").objectStore("workspace").get("current");
+    request.onsuccess = () => resolve(request.result?.schemaVersion === 1 ? request.result : structuredClone(EMPTY_WORKSPACE));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function persistWorkspace() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("workspace", "readwrite").objectStore("workspace").put(workspace, "current");
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => persistWorkspace().catch(() => showToast("自动保存失败，请导出备份", "error")), 350);
+}
+
+function updateProject(id, updater) {
+  workspace.projects = workspace.projects.map((project) => project.id === id ? { ...updater(project), updatedAt: now() } : project);
+  scheduleSave();
+}
+
+async function api(operation, payload) {
+  if (staticAgentMode) return runStaticAgentOperation(operation, payload);
+  try {
+    const response = await fetch(`./api/agent/${operation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const isJson = response.headers.get("content-type")?.includes("application/json");
+    if (response.status === 404 && !isJson) {
+      staticAgentMode = true;
+      return runStaticAgentOperation(operation, payload);
+    }
+    const result = isJson ? await response.json() : { error: "服务返回了无法解析的响应" };
+    if (!response.ok) throw new Error(result.error || "Agent 请求失败");
+    return result;
+  } catch (error) {
+    if (error instanceof TypeError) {
+      staticAgentMode = true;
+      return runStaticAgentOperation(operation, payload);
+    }
+    throw error;
+  }
+}
+
+async function runTask(task) {
+  busy = true; renderAgent(); renderCanvasHeaderOnly();
+  try { return await task(); }
+  catch (error) { showToast(error instanceof Error ? error.message : "操作失败", "error"); }
+  finally { busy = false; renderAgent(); renderCanvasHeaderOnly(); }
+}
+
+function showToast(message, type = "success") {
+  const root = $("#toast-root");
+  root.innerHTML = `<div class="toast ${type}" role="${type === "error" ? "alert" : "status"}">${escapeHtml(message)}</div>`;
+  setTimeout(() => { if (root.textContent === message) root.innerHTML = ""; }, 2800);
+}
+
+function openModal(title, content, setup, wide = false) {
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="modal-backdrop"><section class="modal ${wide ? "modal-wide" : ""}" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header class="modal-header"><h2>${escapeHtml(title)}</h2><button class="icon-button modal-close" type="button" aria-label="关闭">×</button></header>${content}</section></div>`;
+  $(".modal-backdrop", root).addEventListener("mousedown", (event) => { if (event.target.classList.contains("modal-backdrop")) closeModal(); });
+  $(".modal-close", root).addEventListener("click", closeModal);
+  setup?.(root);
+}
+
+function closeModal() { $("#modal-root").innerHTML = ""; }
+
+function renderSidebar() {
+  const list = $("#project-list");
+  list.innerHTML = `<div class="section-label">最近项目</div>${workspace.projects.length ? workspace.projects.map((project) => `
+    <button type="button" class="project-row ${project.id === workspace.activeProjectId ? "selected" : ""}" data-project-id="${project.id}">
+      <span class="project-title">${escapeHtml(project.title)}</span>
+      <span class="project-meta">${project.campaignType === "product" ? "产品宣传" : "活动宣传"} · ${STATUS_LABELS[project.status]}</span>
+    </button>`).join("") : '<p class="empty-projects">还没有文章项目</p>'}`;
+  $$('[data-project-id]', list).forEach((button) => button.addEventListener("click", () => {
+    workspace.activeProjectId = button.dataset.projectId;
+    selectedRange = undefined; selectedText = ""; rewritePreview = undefined;
+    scheduleSave(); renderAll(); closeSidebar();
+  }));
+}
+
+function showNewProject() {
+  openModal("新建宣传文章", `<form id="new-project-form" class="form-stack">
+    <label>项目名称<input name="title" placeholder="例如：夏日新品发布" maxlength="80" autofocus></label>
+    <fieldset><legend>宣传类型</legend><div class="segmented-control"><button type="button" class="selected" data-type="product">产品宣传</button><button type="button" data-type="event">活动宣传</button></div></fieldset>
+    <label>粗浅想法<textarea name="idea" rows="6" maxlength="4000" placeholder="不用整理，写下产品、活动和你最想表达的几句话。Agent 会继续追问。"></textarea></label>
+    <div class="modal-actions"><button class="button secondary modal-cancel" type="button">取消</button><button class="button primary" type="submit">开始创作</button></div>
+  </form>`, (root) => {
+    let campaignType = "product";
+    $$('[data-type]', root).forEach((button) => button.addEventListener("click", () => {
+      campaignType = button.dataset.type;
+      $$('[data-type]', root).forEach((item) => item.classList.toggle("selected", item === button));
+    }));
+    $(".modal-cancel", root).addEventListener("click", closeModal);
+    $("#new-project-form", root).addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      const title = String(data.get("title") || "").trim();
+      const idea = String(data.get("idea") || "").trim();
+      if (title.length < 2 || idea.length < 5) return showToast("请填写项目名称和至少五个字的想法", "error");
+      const time = now();
+      const project = { id: uid(), title, campaignType, idea, status: "idea", messages: [], answers: [], directions: [], articleHtml: "", versions: [], assets: [], auditIssues: [], createdAt: time, updatedAt: time };
+      workspace.projects.unshift(project); workspace.activeProjectId = project.id;
+      scheduleSave(); closeModal(); renderAll();
+    });
+  });
+}
+
+function showBrandSettings() {
+  const fields = [
+    ["companyName", "公司或品牌名称", "用于文章署名与自称"], ["targetAudience", "主要目标客户", "例如：正在数字化转型的中小企业"],
+    ["tone", "品牌语气", "例如：专业、清晰、有温度"], ["defaultCta", "默认行动指令", "例如：预约体验或联系顾问"],
+    ["summary", "品牌简介", "公司做什么，解决什么问题", true], ["keyPoints", "长期产品事实", "可公开的产品能力、资质与事实依据", true],
+    ["forbiddenTerms", "禁用词与限制", "用逗号分隔"],
+  ];
+  openModal("品牌档案", `<form id="brand-form" class="brand-form"><p class="form-intro">这些内容会作为每次创作的固定上下文。只填写可以公开、可以验证的信息。</p><div class="form-grid">
+    ${fields.map(([key, label, placeholder, multi]) => `<label class="${multi ? "span-two" : ""}">${label}${multi ? `<textarea name="${key}" rows="3" placeholder="${placeholder}">${escapeHtml(workspace.brand[key])}</textarea>` : `<input name="${key}" value="${escapeHtml(workspace.brand[key])}" placeholder="${placeholder}">`}</label>`).join("")}
+    <label>品牌主色<div class="color-input"><input name="primaryColor" type="color" value="${workspace.brand.primaryColor}"><span>${workspace.brand.primaryColor}</span></div></label>
+    <label>辅助色<div class="color-input"><input name="accentColor" type="color" value="${workspace.brand.accentColor}"><span>${workspace.brand.accentColor}</span></div></label>
+  </div><div class="modal-actions"><button class="button secondary modal-cancel" type="button">取消</button><button class="button primary" type="submit">保存品牌档案</button></div></form>`, (root) => {
+    $(".modal-cancel", root).addEventListener("click", closeModal);
+    $$('input[type="color"]', root).forEach((input) => input.addEventListener("input", () => input.nextElementSibling.textContent = input.value));
+    $("#brand-form", root).addEventListener("submit", (event) => {
+      event.preventDefault(); const data = new FormData(event.currentTarget);
+      workspace.brand = Object.fromEntries(Object.keys(DEFAULT_BRAND).map((key) => [key, String(data.get(key) || DEFAULT_BRAND[key])]));
+      scheduleSave(); closeModal(); renderCanvas(); showToast("品牌档案已保存");
+    });
+  }, true);
+}
+
+function currentStep(status) { return status === "idea" ? 0 : ["interview", "brief"].includes(status) ? 1 : status === "directions" ? 2 : 3; }
+
+function renderAgent() {
+  const panel = $("#agent-panel");
+  const project = activeProject();
+  if (!project) {
+    panel.innerHTML = `<div class="empty-agent"><div class="agent-empty-icon">✦</div><h1>从一个粗浅想法开始</h1><p>建立项目后，Agent 会一次追问一个关键问题，再整理成可确认的营销简报。</p></div>`;
+    return;
+  }
+  const step = currentStep(project.status);
+  panel.innerHTML = `<header class="agent-header"><div><h1>${escapeHtml(project.title)}</h1><span>已自动保存</span></div><button id="asset-upload-button" class="icon-button" type="button" title="添加图片素材">▧＋</button><input id="asset-file" hidden type="file" accept="image/*"></header>
+    <div class="workflow-steps">${STEPS.map((label, index) => `<div class="${index === step ? "current" : ""} ${index < step ? "done" : ""}"><span>${index < step ? "✓" : index + 1}</span>${label}</div>`).join("")}</div>
+    <div class="agent-scroll"><div class="idea-source"><span>最初想法</span><p>${escapeHtml(project.idea)}</p></div>
+      ${project.messages.map((message) => `<div class="message ${message.role}"><span class="message-avatar">${message.role === "agent" ? "✦" : "你"}</span><div><span class="message-role">${message.role === "agent" ? "Agent" : "你"}</span><p>${escapeHtml(message.text)}</p></div></div>`).join("")}
+      ${agentStatusContent(project)}
+    </div>${project.status === "interview" ? `<div class="agent-composer"><textarea id="agent-answer" rows="2" placeholder="回复 Agent…"></textarea><button id="send-answer" type="button" ${busy ? "disabled" : ""}>${busy ? "◌" : "➤"}</button></div>` : ""}`;
+  bindAgentEvents(project);
+}
+
+function agentStatusContent(project) {
+  if (project.status === "idea") return `<div class="action-block"><h2>准备开始访谈</h2><p>Agent 将结合品牌档案，在五个问题内补齐文章所需事实。</p><button id="start-interview" class="button primary" type="button" ${busy ? "disabled" : ""}>${busy ? "◌ 正在准备" : "✦ 开始梳理"}</button></div>`;
+  if (project.status === "brief" && project.brief) {
+    const brief = project.brief;
+    return `<div class="brief-form"><div class="section-row"><h2>确认营销简报</h2><span>${brief.missingFacts.length ? `${brief.missingFacts.length} 项待补` : "信息完整"}</span></div>
+      <label>宣传主题<textarea data-brief="subject" rows="2">${escapeHtml(brief.subject)}</textarea></label>
+      <label>目标读者<input data-brief="audience" value="${escapeHtml(brief.audience)}"></label>
+      <label>传播目标<input data-brief="objective" value="${escapeHtml(brief.objective)}"></label>
+      <label>核心信息<textarea data-brief="keyMessage" rows="3">${escapeHtml(brief.keyMessage)}</textarea></label>
+      <label>事实依据<textarea data-brief-list="proofPoints" rows="3">${escapeHtml(brief.proofPoints.join("\n"))}</textarea></label>
+      ${brief.campaignType === "event" ? `<label>活动信息<textarea data-brief="eventDetails" rows="3">${escapeHtml(brief.eventDetails)}</textarea></label>` : ""}
+      <label>行动指令<input data-brief="cta" value="${escapeHtml(brief.cta)}"></label>
+      ${brief.missingFacts.length ? `<div class="missing-facts">待补充：${escapeHtml(brief.missingFacts.join("、"))}</div>` : ""}
+      <button id="confirm-brief" class="button primary full" type="button" ${busy ? "disabled" : ""}>${busy ? "◌ 正在生成" : "✓ 确认并生成方向"}</button></div>`;
+  }
+  if (project.status === "directions") return `<div class="direction-list"><h2>选择标题与叙事方向</h2>${project.directions.map((direction) => `<button data-direction="${direction.id}" class="direction-option ${direction.id === project.selectedDirectionId ? "selected" : ""}" type="button"><span>${escapeHtml(direction.angle)}</span><strong>${escapeHtml(direction.title)}</strong><ol>${direction.outline.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></button>`).join("")}<button id="generate-draft" class="button primary full" type="button" ${!project.selectedDirectionId || busy ? "disabled" : ""}>${busy ? "◌ 正在写作" : "生成正文 →"}</button></div>`;
+  if (project.status === "draft") return draftAgentContent(project);
+  return "";
+}
+
+function draftAgentContent(project) {
+  const assets = project.assets.length ? `<div class="asset-strip"><div class="section-row"><h2>图片素材</h2><span>${project.assets.length}/8</span></div>${project.assets.map((asset) => `<div class="asset-row"><img src="${asset.dataUrl}" alt="${escapeHtml(asset.description)}"><div><strong>${escapeHtml(asset.name)}</strong><p>${escapeHtml(asset.description)}</p></div><button data-remove-asset="${asset.id}" type="button">×</button></div>`).join("")}</div>` : "";
+  const rewrite = rewritePreview ? `<div class="rewrite-preview"><div><span>原文</span><p>${escapeHtml(rewritePreview.original)}</p></div><div class="replacement"><span>修改后</span><p>${escapeHtml(rewritePreview.replacement)}</p></div><div class="preview-actions"><button id="cancel-rewrite" class="button secondary" type="button">取消</button><button id="apply-rewrite" class="button primary" type="button">接受修改</button></div></div>` : selectedText ? `<blockquote class="selection-quote">${escapeHtml(selectedText)}</blockquote><div class="rewrite-presets">${["表达更自然", "缩短并精简", "扩写细节", "更有号召力"].map((label) => `<button data-rewrite="${label}" type="button" ${busy ? "disabled" : ""}>${label}</button>`).join("")}</div><div class="custom-instruction"><input id="rewrite-instruction" placeholder="输入自定义修改要求"><button id="send-rewrite" type="button">➤</button></div>` : '<p class="selection-tip">在右侧文章中选中文字，即可预览 AI 改写。</p>';
+  return `<div class="rewrite-workspace">${assets}<h2>局部 AI 修改</h2>${rewrite}</div>`;
+}
+
+function bindAgentEvents(project) {
+  $("#asset-upload-button")?.addEventListener("click", () => $("#asset-file").click());
+  $("#asset-file")?.addEventListener("change", (event) => addAsset(event.target.files?.[0]));
+  $("#start-interview")?.addEventListener("click", startInterview);
+  $("#send-answer")?.addEventListener("click", sendAnswer);
+  $("#agent-answer")?.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendAnswer(); } });
+  $$('[data-brief]').forEach((input) => input.addEventListener("input", () => { project.brief[input.dataset.brief] = input.value; recomputeMissing(project.brief); scheduleSave(); renderCanvas(); }));
+  $$('[data-brief-list]').forEach((input) => input.addEventListener("input", () => { project.brief[input.dataset.briefList] = input.value.split(/\n/).map((value) => value.trim()).filter(Boolean); recomputeMissing(project.brief); scheduleSave(); renderCanvas(); }));
+  $("#confirm-brief")?.addEventListener("click", confirmBrief);
+  $$('[data-direction]').forEach((button) => button.addEventListener("click", () => { project.selectedDirectionId = button.dataset.direction; scheduleSave(); renderAgent(); }));
+  $("#generate-draft")?.addEventListener("click", generateDraft);
+  $$('[data-rewrite]').forEach((button) => button.addEventListener("click", () => requestRewrite(button.dataset.rewrite)));
+  $("#send-rewrite")?.addEventListener("click", () => { const value = $("#rewrite-instruction").value.trim(); if (value) requestRewrite(value); });
+  $("#cancel-rewrite")?.addEventListener("click", () => { rewritePreview = undefined; renderAgent(); });
+  $("#apply-rewrite")?.addEventListener("click", applyRewrite);
+  $$('[data-remove-asset]').forEach((button) => button.addEventListener("click", () => { project.assets = project.assets.filter((asset) => asset.id !== button.dataset.removeAsset); scheduleSave(); renderAgent(); }));
+}
+
+function recomputeMissing(brief) {
+  brief.missingFacts = [];
+  if (!brief.keyMessage || /待补充|待定/.test(brief.keyMessage)) brief.missingFacts.push(brief.campaignType === "event" ? "现场体验内容" : "产品核心卖点");
+  if (!brief.proofPoints.length || brief.proofPoints.some((item) => /待补充|待定|暂无/.test(item))) brief.missingFacts.push("可信事实依据");
+  if (brief.campaignType === "event" && (!brief.eventDetails || /待补充|待定/.test(brief.eventDetails))) brief.missingFacts.push("活动时间、地点或参与方式");
+}
+
+async function startInterview() {
+  const project = activeProject(); if (!project) return;
+  await runTask(async () => applyInterviewResult(project, await api("interview", { campaignType: project.campaignType, idea: project.idea, answers: project.answers, brand: workspace.brand })));
+  renderAll();
+}
+
+async function sendAnswer() {
+  const project = activeProject(); const input = $("#agent-answer"); const answer = input?.value.trim();
+  if (!project?.pendingQuestion || !answer || busy) return;
+  const nextAnswers = [...project.answers, { questionId: project.pendingQuestion.id, question: project.pendingQuestion.text, answer }];
+  await runTask(async () => { const result = await api("interview", { campaignType: project.campaignType, idea: project.idea, answers: nextAnswers, brand: workspace.brand }); project.answers = nextAnswers; applyInterviewResult(project, result, answer); });
+  renderAll();
+}
+
+function applyInterviewResult(project, result, answer) {
+  if (answer) project.messages.push({ id: uid(), role: "user", text: answer, createdAt: now() });
+  if (result.status === "question") {
+    project.status = "interview"; project.pendingQuestion = result.question;
+    project.messages.push({ id: uid(), role: "agent", text: result.question.text, createdAt: now() });
+  } else {
+    project.status = "brief"; project.pendingQuestion = undefined; project.brief = result.brief;
+    project.messages.push({ id: uid(), role: "agent", text: "信息已经整理成营销简报。请检查并修改所有事实，再确认内容方向。", createdAt: now() });
+  }
+  project.updatedAt = now(); scheduleSave();
+}
+
+async function confirmBrief() {
+  const project = activeProject(); if (!project?.brief) return;
+  await runTask(async () => { const result = await api("directions", { brief: project.brief, brand: workspace.brand }); project.directions = result.directions; project.selectedDirectionId = result.directions[0]?.id; project.status = "directions"; project.updatedAt = now(); scheduleSave(); });
+  renderAll();
+}
+
+async function generateDraft() {
+  const project = activeProject(); const direction = project?.directions.find((item) => item.id === project.selectedDirectionId);
+  if (!project?.brief || !direction) return;
+  await runTask(async () => { const result = await api("draft", { brief: project.brief, direction, brand: workspace.brand, assets: project.assets.map(({ name, description }) => ({ name, description })) }); project.articleHtml = result.articleHtml; project.status = "draft"; project.versions.unshift({ id: uid(), html: result.articleHtml, reason: "生成初稿", createdAt: now() }); project.updatedAt = now(); scheduleSave(); });
+  renderAll();
+}
+
+async function requestRewrite(instruction) {
+  const project = activeProject(); if (!project || !selectedText || busy) return;
+  const original = selectedText;
+  await runTask(async () => { const result = await api("rewrite", { text: original, instruction, brand: workspace.brand, brief: project.brief }); rewritePreview = { original, replacement: result.replacement, instruction }; });
+  renderAgent();
+}
+
+function applyRewrite() {
+  const project = activeProject(); const editor = $("#article-editor");
+  if (!project || !rewritePreview || !selectedRange || !editor?.contains(selectedRange.commonAncestorContainer)) return showToast("选区已失效，请重新选择文字", "error");
+  project.versions.unshift({ id: uid(), html: editor.innerHTML, reason: rewritePreview.instruction, createdAt: now() }); project.versions = project.versions.slice(0, 10);
+  selectedRange.deleteContents(); const node = document.createTextNode(rewritePreview.replacement); selectedRange.insertNode(node); selectedRange.setStartAfter(node); selectedRange.collapse(true);
+  project.articleHtml = editor.innerHTML; project.auditIssues = []; selectedRange = undefined; selectedText = ""; rewritePreview = undefined; scheduleSave(); renderAgent(); hideBubble(); showToast("已应用修改");
+}
+
+function addAsset(file) {
+  const project = activeProject(); if (!file || !project) return;
+  if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(file.type) || file.size > 2 * 1024 * 1024) return showToast("仅支持 2MB 以内的 PNG、JPEG、WebP 或 GIF", "error");
+  if (project.assets.length >= 8) return showToast("每个项目最多保存 8 张图片", "error");
+  const description = prompt("请描述图片内容，Agent 将根据说明建议插入位置：", file.name) || file.name;
+  const reader = new FileReader(); reader.onload = () => { project.assets.push({ id: uid(), name: file.name, mimeType: file.type, dataUrl: String(reader.result), description, createdAt: now() }); scheduleSave(); renderAgent(); }; reader.readAsDataURL(file);
+}
+
+function renderCanvas() {
+  const panel = $("#canvas-panel"); const project = activeProject();
+  panel.innerHTML = `${canvasHeader(project)}${canvasBody(project)}`;
+  bindCanvasEvents(project);
+}
+
+function canvasHeader(project) {
+  return `<header class="canvas-header"><div class="canvas-title"><span>▤</span><span>${project ? "公众号文章" : "创作画布"}</span></div>${project?.status === "draft" ? `<div class="canvas-actions"><button id="audit-article" class="button quiet" type="button" ${busy ? "disabled" : ""}>⌕ 发布检查</button><button id="preview-article" class="button quiet" type="button">◉ 预览</button><button id="copy-article" class="button dark" type="button" ${busy || project.auditIssues.some((issue) => issue.severity === "blocking") ? "disabled" : ""}>▣ 复制到公众号</button></div>` : ""}</header>`;
+}
+
+function renderCanvasHeaderOnly() {
+  const panel = $("#canvas-panel"); const old = $(".canvas-header", panel); const project = activeProject();
+  if (old) { const holder = document.createElement("div"); holder.innerHTML = canvasHeader(project); old.replaceWith(holder.firstElementChild); bindCanvasHeader(project); }
+}
+
+function canvasBody(project) {
+  if (!project) return `<div class="welcome-canvas" style="--brand-primary:${workspace.brand.primaryColor};--brand-accent:${workspace.brand.accentColor}"><div class="art-field art-one"></div><div class="art-field art-two"></div><div class="welcome-copy"><span class="welcome-icon">✦</span><h2>把零散想法，整理成一篇可以继续编辑的文章。</h2><p>从左侧新建项目。Agent 会先确认事实，再和你一起完成标题、提纲与正文。</p></div></div>`;
+  if (project.status === "draft") {
+    const blocking = project.auditIssues.some((issue) => issue.severity === "blocking");
+    return `<div class="article-stage">${project.auditIssues.length ? `<div class="audit-banner">${blocking ? "⚠" : "✓"}<div>${project.auditIssues.map((issue) => `<p>${escapeHtml(issue.message)}${issue.excerpt ? `（${escapeHtml(issue.excerpt)}）` : ""}</p>`).join("")}</div></div>` : ""}<div class="editor-frame"><div class="editor-toolbar" role="toolbar" aria-label="文章格式"><button data-command="undo" title="撤销" aria-label="撤销">↶</button><button data-command="redo" title="重做" aria-label="重做">↷</button><span class="toolbar-divider"></span><button data-command="formatBlock" data-value="H1" title="一级标题" aria-label="一级标题">H1</button><button data-command="formatBlock" data-value="H2" title="二级标题" aria-label="二级标题">H2</button><button data-command="bold" title="加粗" aria-label="加粗"><b>B</b></button><button data-command="italic" title="斜体" aria-label="斜体"><i>I</i></button><button id="create-link" title="链接" aria-label="链接">⌁</button><button data-command="insertUnorderedList" title="无序列表" aria-label="无序列表">☷</button><button data-command="insertOrderedList" title="有序列表" aria-label="有序列表">☰</button><button data-command="formatBlock" data-value="BLOCKQUOTE" title="引用" aria-label="引用">❞</button></div><div id="article-editor" class="article-prose" contenteditable="true" role="textbox" aria-label="公众号文章正文" aria-multiline="true" data-placeholder="正文会在这里生成，你也可以直接开始写作……">${sanitizeArticleClient(project.articleHtml)}</div><button id="selection-bubble" class="bubble-ai" type="button" hidden>✦ AI 修改</button></div></div>`;
+  }
+  if (project.status === "brief" && project.brief) return `<div class="process-sheet" style="--brand-primary:${workspace.brand.primaryColor}"><div class="sheet-kicker">营销简报</div><h2>${escapeHtml(project.brief.subject)}</h2><dl><div><dt>目标读者</dt><dd>${escapeHtml(project.brief.audience)}</dd></div><div><dt>传播目标</dt><dd>${escapeHtml(project.brief.objective)}</dd></div><div><dt>核心信息</dt><dd>${escapeHtml(project.brief.keyMessage)}</dd></div><div><dt>行动指令</dt><dd>${escapeHtml(project.brief.cta)}</dd></div></dl></div>`;
+  if (project.status === "directions") return `<div class="process-sheet directions-sheet" style="--brand-primary:${workspace.brand.primaryColor}"><div class="sheet-kicker">三个传播方向</div><h2>先选准叙事角度，再生成整篇正文。</h2>${project.directions.map((direction, index) => `<section><span>0${index + 1}</span><div><h3>${escapeHtml(direction.title)}</h3><p>${escapeHtml(direction.angle)} · ${escapeHtml(direction.outline.join(" / "))}</p></div></section>`).join("")}</div>`;
+  return `<div class="process-placeholder" style="--brand-primary:${workspace.brand.primaryColor};--brand-accent:${workspace.brand.accentColor}"><div class="document-ghost"><div class="ghost-accent"></div><div class="ghost-line wide"></div><div class="ghost-line medium"></div><div class="ghost-space"></div><div class="ghost-line short"></div><div class="ghost-line wide"></div><div class="ghost-line medium"></div></div><div class="process-caption"><span>▧</span><p>回答左侧问题后，营销简报会先在这里成形。</p></div></div>`;
+}
+
+function bindCanvasEvents(project) {
+  bindCanvasHeader(project);
+  const editor = $("#article-editor"); if (!editor) return;
+  editor.addEventListener("input", () => { project.articleHtml = editor.innerHTML; project.auditIssues = []; project.updatedAt = now(); $(".audit-banner")?.remove(); scheduleSave(); renderCanvasHeaderOnly(); });
+  ["mouseup", "keyup"].forEach((eventName) => editor.addEventListener(eventName, captureSelection));
+  editor.addEventListener("paste", (event) => { event.preventDefault(); document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); });
+  $$('[data-command]').forEach((button) => button.addEventListener("mousedown", (event) => { event.preventDefault(); editor.focus(); document.execCommand(button.dataset.command, false, button.dataset.value || null); project.articleHtml = editor.innerHTML; scheduleSave(); }));
+  $("#create-link")?.addEventListener("mousedown", (event) => { event.preventDefault(); const href = prompt("输入链接地址", "https://"); if (href && /^https?:\/\//i.test(href)) { editor.focus(); document.execCommand("createLink", false, href); project.articleHtml = editor.innerHTML; scheduleSave(); } });
+  $("#selection-bubble")?.addEventListener("mousedown", (event) => event.preventDefault());
+  $("#selection-bubble")?.addEventListener("click", () => requestRewrite("表达更自然"));
+}
+
+function bindCanvasHeader(project) {
+  if (!project) return;
+  $("#audit-article")?.addEventListener("click", () => auditArticle(false));
+  $("#copy-article")?.addEventListener("click", () => auditArticle(true));
+  $("#preview-article")?.addEventListener("click", showPreview);
+}
+
+function captureSelection() {
+  const selection = window.getSelection(); const editor = $("#article-editor"); const bubble = $("#selection-bubble");
+  if (!selection || !editor || selection.rangeCount === 0 || selection.isCollapsed) { selectedRange = undefined; selectedText = ""; hideBubble(); renderAgent(); return; }
+  const range = selection.getRangeAt(0); if (!editor.contains(range.commonAncestorContainer)) return;
+  const text = range.toString().trim(); if (!text) return;
+  selectedRange = range.cloneRange(); selectedText = text; rewritePreview = undefined;
+  const rect = range.getBoundingClientRect(); const frame = editor.parentElement.getBoundingClientRect();
+  bubble.hidden = false; bubble.style.left = `${Math.max(12, Math.min(rect.left - frame.left, frame.width - 90))}px`; bubble.style.top = `${Math.max(44, rect.top - frame.top - 38)}px`;
+  renderAgent();
+}
+
+function hideBubble() { const bubble = $("#selection-bubble"); if (bubble) bubble.hidden = true; }
+
+async function auditArticle(copyAfter) {
+  const project = activeProject(); const editor = $("#article-editor"); if (!project?.brief || !editor) return;
+  await runTask(async () => {
+    const result = await api("audit", { articleText: editor.innerText, brief: project.brief, brand: workspace.brand });
+    project.auditIssues = result.issues; scheduleSave();
+    const blocking = result.issues.some((issue) => issue.severity === "blocking");
+    if (copyAfter && !blocking) { await copyArticle(editor.innerHTML); showToast("已复制富文本，可粘贴到公众号后台"); }
+    else if (blocking) showToast("发布检查发现未确认事实，请先处理阻断项", "error");
+    else showToast(result.issues.length ? "检查完成，请留意警告" : "发布检查通过");
+  });
+  renderCanvas();
+}
+
+function buildWechatHtml(articleHtml) {
+  const styles = {
+    H1: "margin:0 0 28px;font-size:28px;line-height:1.42;font-weight:700;color:#17202a;letter-spacing:-0.02em;",
+    H2: `margin:36px 0 16px;padding-left:12px;border-left:4px solid ${workspace.brand.primaryColor};font-size:21px;line-height:1.5;font-weight:700;color:#17202a;`,
+    P: "margin:0 0 18px;font-size:16px;line-height:1.9;color:#303841;text-align:justify;", BLOCKQUOTE: `margin:24px 0;padding:16px 18px;background:#f5f8fa;border-left:3px solid ${workspace.brand.accentColor};font-size:15px;line-height:1.8;color:#52606d;`,
+    UL: "margin:16px 0 20px;padding-left:24px;color:#303841;", OL: "margin:16px 0 20px;padding-left:24px;color:#303841;", LI: "margin:8px 0;font-size:16px;line-height:1.8;", A: `color:${workspace.brand.accentColor};text-decoration:underline;`, STRONG: "font-weight:700;color:#17202a;",
+  };
+  const documentCopy = new DOMParser().parseFromString(`<section>${articleHtml}</section>`, "text/html"); const root = documentCopy.body.firstElementChild;
+  root.setAttribute("style", "max-width:680px;margin:0 auto;padding:24px 18px;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;");
+  root.querySelectorAll("*").forEach((element) => { if (styles[element.tagName]) element.setAttribute("style", styles[element.tagName]); element.removeAttribute("class"); element.removeAttribute("id"); });
+  return root.outerHTML;
+}
+
+async function copyArticle(articleHtml) {
+  const html = buildWechatHtml(articleHtml); const parsed = new DOMParser().parseFromString(articleHtml, "text/html"); const plain = parsed.body.innerText;
+  if (window.ClipboardItem && navigator.clipboard?.write) return navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([plain], { type: "text/plain" }) })]);
+  return navigator.clipboard.writeText(plain);
+}
+
+function showPreview() {
+  const project = activeProject(); if (!project) return;
+  openModal("公众号样式预览", `<div class="wechat-preview">${buildWechatHtml(project.articleHtml)}</div>`, undefined, true);
+}
+
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(workspace, null, 2)], { type: "application/json" }); const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob); link.download = `wechat-agent-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); showToast("本地备份已导出");
+}
+
+async function importBackup(file) {
+  try { if (file.size > 25 * 1024 * 1024) throw new Error("备份文件不能超过 25MB"); const parsed = JSON.parse(await file.text()); if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.projects) || !parsed.brand) throw new Error("备份文件格式不正确"); parsed.projects.forEach((project) => { project.articleHtml = sanitizeArticleClient(project.articleHtml); project.versions = Array.isArray(project.versions) ? project.versions.slice(0, 10).map((version) => ({ ...version, html: sanitizeArticleClient(version.html) })) : []; }); workspace = parsed; await persistWorkspace(); renderAll(); showToast("备份已恢复"); }
+  catch (error) { showToast(error instanceof Error ? error.message : "导入失败", "error"); }
+}
+
+function openSidebar() { $("#sidebar-wrap").classList.add("open"); $("#sidebar-scrim").style.display = "block"; }
+function closeSidebar() { $("#sidebar-wrap").classList.remove("open"); $("#sidebar-scrim").style.display = ""; }
+function renderAll() { renderSidebar(); renderAgent(); renderCanvas(); }
+
+async function init() {
+  try { workspace = await loadWorkspace(); }
+  catch { workspace = structuredClone(EMPTY_WORKSPACE); showToast("无法读取旧数据，已打开空白工作区", "error"); }
+  $("#loading").hidden = true; $("#app").hidden = false; renderAll();
+  $("#new-project").addEventListener("click", showNewProject);
+  $("#brand-settings").addEventListener("click", showBrandSettings);
+  $("#export-backup").addEventListener("click", exportBackup);
+  $("#import-backup").addEventListener("change", (event) => event.target.files?.[0] && importBackup(event.target.files[0]));
+  $("#mobile-menu").addEventListener("click", () => $("#sidebar-wrap").classList.contains("open") ? closeSidebar() : openSidebar());
+  $("#sidebar-scrim").addEventListener("click", closeSidebar);
+  $$('[data-mobile-view]').forEach((button) => button.addEventListener("click", () => {
+    $("#app").classList.toggle("mobile-canvas", button.dataset.mobileView === "canvas");
+    $$('[data-mobile-view]').forEach((item) => item.classList.toggle("selected", item === button));
+  }));
+}
+
+init();

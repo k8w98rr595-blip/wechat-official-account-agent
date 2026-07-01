@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="从粗浅想法到可编辑公众号宣传文章" />
+    <title>公众号写作 Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="loading" class="app-loading"><span class="brand-mark">写</span><p>正在打开本地工作区…</p></div>
+    <div id="app" class="app-shell" hidden>
+      <div id="sidebar-wrap" class="sidebar-wrap">
+        <aside class="sidebar">
+          <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">写</span><span>公众号写作 Agent</span></div>
+          <button id="new-project" class="new-project-button" type="button"><span aria-hidden="true">＋</span>新建文章</button>
+          <nav class="sidebar-nav" aria-label="工作区">
+            <button type="button" class="nav-row active-static"><span aria-hidden="true">▱</span>项目</button>
+            <button id="brand-settings" type="button" class="nav-row"><span aria-hidden="true">◒</span>品牌档案</button>
+          </nav>
+          <div id="project-list" class="project-list" aria-label="项目列表"></div>
+          <div class="sidebar-footer">
+            <div class="backup-actions">
+              <button id="export-backup" type="button" class="icon-text-button">↓ 导出备份</button>
+              <label class="icon-text-button file-label">↑ 导入<input id="import-backup" type="file" accept="application/json" /></label>
+            </div>
+            <p><span aria-hidden="true">⌁</span>数据仅保存在此浏览器</p>
+          </div>
+        </aside>
+      </div>
+      <button id="sidebar-scrim" class="sidebar-scrim" type="button" aria-label="关闭项目栏"></button>
+      <button id="mobile-menu" class="mobile-menu" type="button" aria-label="打开项目栏">☰</button>
+      <div id="mobile-tabs" class="mobile-tabs" aria-label="移动端工作区切换">
+        <button type="button" class="selected" data-mobile-view="agent">Agent</button>
+        <button type="button" data-mobile-view="canvas">正文</button>
+      </div>
+      <section id="agent-panel" class="agent-panel" aria-label="Agent 对话"></section>
+      <main id="canvas-panel" class="canvas-panel" aria-label="公众号文章画布"></main>
+    </div>
+    <div id="modal-root"></div>
+    <div id="toast-root" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

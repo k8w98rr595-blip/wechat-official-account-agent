@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>模型接入速查表</title>
+  <style>
+    :root{--ink:#172126;--muted:#647178;--line:#dce4e6;--teal:#0f766e;--soft:#eff7f6}*{box-sizing:border-box}body{margin:0;background:#f2f5f5;color:var(--ink);font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.page{max-width:900px;margin:40px auto;padding:48px 56px;background:#fff;border:1px solid var(--line);box-shadow:0 12px 45px rgba(24,39,45,.07)}h1{margin:0;font-size:34px;letter-spacing:-.04em}h2{margin:34px 0 12px;padding-left:12px;border-left:4px solid var(--teal);font-size:19px}p{color:var(--muted)}table{width:100%;border-collapse:collapse}th,td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{font-size:12px;color:var(--muted)}code,pre{font-family:"SFMono-Regular",Consolas,monospace}code{padding:2px 5px;background:var(--soft);border-radius:4px}pre{overflow:auto;padding:18px;background:#182126;color:#eef7f6;border-radius:8px;line-height:1.55}.warn{padding:14px 16px;border:1px solid #eed99d;background:#fff9e9;color:#715a18;border-radius:8px}.ok{color:var(--teal);font-weight:700}a{color:var(--teal)}@media print{body{background:#fff}.page{margin:0;border:0;box-shadow:none}}@media(max-width:680px){.page{margin:0;padding:28px 20px;border:0}h1{font-size:28px}}
+  </style>
+</head>
+<body><main class="page">
+  <h1>模型接入速查表</h1>
+  <p>适用于当前“公众号写作 Agent”的 OpenAI-compatible 接口。</p>
+  <h2>三个必填值</h2>
+  <table><thead><tr><th>字段</th><th>含义</th><th>常见错误</th></tr></thead><tbody>
+    <tr><td><code>AGENT_BASE_URL</code></td><td>API 根地址，通常以 <code>/v1</code> 结尾</td><td>不要再加 <code>/chat/completions</code></td></tr>
+    <tr><td><code>AGENT_API_KEY</code></td><td>供应商控制台创建的服务端密钥</td><td>不要写入网页、聊天或 Git</td></tr>
+    <tr><td><code>AGENT_MODEL</code></td><td>供应商文档中的精确模型 ID</td><td>展示名称不一定等于 API 模型 ID</td></tr>
+  </tbody></table>
+  <h2>.env.local</h2>
+  <pre>AGENT_PROVIDER_MODE=openai-compatible
+AGENT_BASE_URL=https://你的服务地址/v1
+AGENT_API_KEY=你的本机密钥
+AGENT_MODEL=供应商提供的模型ID
+AGENT_TIMEOUT_MS=45000</pre>
+  <div class="warn">应用会自动在 Base URL 后附加 <code>/chat/completions</code>。若供应商文档给的是完整地址，请只保留它前面的根地址。</div>
+  <h2>成功信号</h2>
+  <p><span class="ok">✓</span> 健康检查显示 <code>providerMode: openai-compatible</code><br><span class="ok">✓</span> 新建项目后，第一条 Agent 追问来自真实模型<br><span class="ok">✓</span> 终端和浏览器没有 401、404、429 或超时提示</p>
+  <h2>错误定位</h2>
+  <table><tbody><tr><td><code>401</code></td><td>密钥无效、过期，或供应商不是 Bearer 鉴权</td></tr><tr><td><code>404</code></td><td>Base URL 路径错误，常见于重复填写 <code>/chat/completions</code></td></tr><tr><td><code>429</code></td><td>账户余额、并发或速率配额不足</td></tr><tr><td>超时</td><td>网络不可达、模型过慢，或超时时间过短</td></tr><tr><td>结构校验失败</td><td>模型没有稳定返回 JSON；换用指令遵循更好的模型</td></tr></tbody></table>
+  <p><a href="../lessons/0001-connect-an-openai-compatible-model.html">返回完整练习</a></p>
+</main></body></html>

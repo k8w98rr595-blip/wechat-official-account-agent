@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>第一课：接入一个真实模型</title>
+  <style>
+    :root{--ink:#172126;--muted:#637078;--line:#dce4e6;--teal:#0f766e;--blue:#2563eb;--soft:#eff7f6}*{box-sizing:border-box}body{margin:0;background:#f1f4f4;color:var(--ink);font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.lesson{max-width:920px;margin:36px auto;padding:54px 64px;background:#fff;border:1px solid var(--line);box-shadow:0 16px 54px rgba(25,40,46,.07)}header{padding-bottom:28px;border-bottom:1px solid var(--line)}h1{margin:0 0 10px;font-size:38px;line-height:1.2;letter-spacing:-.045em}header p,p{color:var(--muted)}h2{margin:38px 0 12px;font-size:21px}h3{font-size:16px}.step{margin:18px 0;padding:20px 22px;border:1px solid var(--line);border-radius:10px}.step strong{color:var(--teal)}code,pre{font-family:"SFMono-Regular",Consolas,monospace}code{padding:2px 5px;background:var(--soft);border-radius:4px}pre{overflow:auto;padding:18px;background:#182126;color:#edf7f5;border-radius:8px;line-height:1.55}.check{padding:18px;border-left:4px solid var(--blue);background:#f4f7ff}.warn{padding:15px 17px;border:1px solid #eed99d;background:#fff9e9;color:#715a18;border-radius:8px}a{color:var(--teal)}footer{margin-top:42px;padding-top:20px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}@media(max-width:680px){.lesson{margin:0;padding:30px 20px;border:0}h1{font-size:30px}}@media print{body{background:#fff}.lesson{margin:0;border:0;box-shadow:none}}
+  </style>
+</head>
+<body><article class="lesson">
+  <header><h1>接入一个真实模型</h1><p>目标：在 10 分钟内把公众号写作 Agent 从 Mock 模式切换到 OpenAI-compatible 模型。</p></header>
+  <h2>先理解一件事</h2>
+  <p>应用最终会请求：<code>AGENT_BASE_URL + /chat/completions</code>。请求头使用 <code>Authorization: Bearer API_KEY</code>，请求正文中携带 <code>AGENT_MODEL</code>。所以你只需要从供应商那里找到三个值：根地址、密钥、模型 ID。</p>
+  <section class="step"><strong>步骤 1：准备供应商信息</strong><p>打开供应商的官方 API 文档和控制台，找到 Chat Completions 兼容地址、创建一个 API Key，并复制准确的模型 ID。如果文档只支持别的接口形状，当前应用不能直接接入。</p></section>
+  <section class="step"><strong>步骤 2：创建本机配置</strong><pre>cd C:\Users\lhs04\Documents\小程序\公众号agent
+Copy-Item .env.example .env.local
+notepad .env.local</pre><p>把文件改成：</p><pre>AGENT_PROVIDER_MODE=openai-compatible
+AGENT_BASE_URL=https://你的服务地址/v1
+AGENT_API_KEY=你的本机密钥
+AGENT_MODEL=供应商提供的模型ID
+AGENT_TIMEOUT_MS=45000</pre></section>
+  <div class="warn">不要把 API Key 发给我，也不要写进 <code>public/app.js</code>。`.env.local` 已被项目忽略，只由本机 Node 服务读取。</div>
+  <section class="step"><strong>步骤 3：启动应用</strong><pre>node backend/server.mjs</pre><p>若没有全局 Node：</p><pre>&amp; 'C:\Users\lhs04\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' backend/server.mjs</pre></section>
+  <section class="step"><strong>步骤 4：先检查模式</strong><pre>Invoke-RestMethod http://127.0.0.1:3000/api/health</pre><p>期望看到 <code>providerMode</code> 为 <code>openai-compatible</code>。这只证明配置被读取，还没有产生模型费用。</p></section>
+  <section class="step"><strong>步骤 5：完成一次真实请求</strong><p>打开 <code>http://127.0.0.1:3000</code>，新建一个项目并点击“开始梳理”。如果出现模型生成的第一条追问，接入完成。</p></section>
+  <div class="check"><strong>检索练习：</strong>不看上文，回答：为什么 Base URL 里不能再写一次 <code>/chat/completions</code>？如果你能回答“因为应用代码会自动附加它”，就掌握了最常见的路径错误。</div>
+  <h2>排错顺序</h2><ol><li>健康检查仍显示 <code>mock</code>：确认文件名必须是 <code>.env.local</code>，然后重启 Node。</li><li>401：检查 Key 是否有效、是否属于当前供应商。</li><li>404：检查 Base URL 是否重复包含接口路径。</li><li>429：检查余额、并发和速率额度。</li><li>结构校验失败：换用更擅长遵循 JSON 指令的模型。</li></ol>
+  <p>主要参考：<a href="https://platform.openai.com/docs/api-reference/chat/create-chat-completion">OpenAI Chat Completions 官方接口</a>；随手查看 <a href="../reference/model-connection-cheatsheet.html">模型接入速查表</a>。</p>
+  <footer>完成后把供应商名称和“健康检查结果”告诉我，不要发送 API Key。我可以继续帮你核对 Base URL、模型 ID 或错误信息。</footer>
+</article></body></html>
