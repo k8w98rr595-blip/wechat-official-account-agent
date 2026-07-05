@@ -1,4 +1,5 @@
 import { runStaticAgentOperation } from "./mock-agent.js";
+import { runAgentOperation } from "./agent-core.js";
 
 const DEFAULT_BRAND = {
   companyName: "", summary: "", targetAudience: "", tone: "专业、清晰、有温度",
@@ -17,7 +18,8 @@ let rewritePreview;
 let saveTimer;
 const configuredApiBaseUrl = String(window.AGENT_CONFIG?.apiBaseUrl || "").replace(/\/$/, "");
 const remoteAgentConfigured = Boolean(configuredApiBaseUrl);
-let staticAgentMode = location.protocol === "file:" || (location.hostname.endsWith(".github.io") && !remoteAgentConfigured);
+const directDeepSeekMode = location.hostname.endsWith(".github.io") && !remoteAgentConfigured;
+let staticAgentMode = location.protocol === "file:";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -78,6 +80,25 @@ function updateProject(id, updater) {
 
 async function api(operation, payload) {
   if (staticAgentMode) return runStaticAgentOperation(operation, payload);
+  if (directDeepSeekMode) {
+    const apiKey = await requestDeepSeekApiKey();
+    try {
+      return await runAgentOperation(operation, payload, {
+        AGENT_PROVIDER_MODE: "openai-compatible",
+        AGENT_BASE_URL: "https://api.deepseek.com",
+        AGENT_API_KEY: apiKey,
+        AGENT_MODEL: "deepseek-v4-flash",
+        AGENT_MODEL_QUALITY: "deepseek-v4-pro",
+        AGENT_THINKING_MODE: "operation-based",
+        AGENT_TIMEOUT_MS: "60000",
+      });
+    } catch (error) {
+      if (/\b(?:401|403)\b/.test(error instanceof Error ? error.message : "")) {
+        sessionStorage.removeItem("deepseek-api-key");
+      }
+      throw error;
+    }
+  }
   let accessToken = "";
   if (remoteAgentConfigured) {
     accessToken = sessionStorage.getItem("agent-access-token") || "";
@@ -117,8 +138,32 @@ async function api(operation, payload) {
   }
 }
 
+function requestDeepSeekApiKey() {
+  const saved = sessionStorage.getItem("deepseek-api-key");
+  if (saved) return Promise.resolve(saved);
+  return new Promise((resolve, reject) => {
+    const root = $("#modal-root");
+    root.innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="deepseek-key-title"><header class="modal-header"><h2 id="deepseek-key-title">连接 DeepSeek</h2><button class="icon-button modal-close" type="button" aria-label="关闭">${icon("x")}</button></header><form id="deepseek-key-form" class="modal-form"><p>API Key 仅保存在当前标签页，并直接发送至 DeepSeek 官方接口。关闭标签页后自动清除。</p><label>DeepSeek API Key<input id="deepseek-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" required></label><button class="button primary full" type="submit">连接真实 AI</button></form></section></div>`;
+    const finish = (key) => {
+      root.innerHTML = "";
+      if (!key) reject(new Error("需要 DeepSeek API Key 才能使用真实 AI"));
+      else {
+        sessionStorage.setItem("deepseek-api-key", key);
+        resolve(key);
+      }
+    };
+    $(".modal-close", root).addEventListener("click", () => finish(""));
+    $(".modal-backdrop", root).addEventListener("mousedown", (event) => { if (event.target.classList.contains("modal-backdrop")) finish(""); });
+    $("#deepseek-key-form", root).addEventListener("submit", (event) => {
+      event.preventDefault();
+      finish($("#deepseek-key-input", root).value.trim());
+    });
+    $("#deepseek-key-input", root).focus();
+  });
+}
+
 function agentStatusLabel() {
-  if (remoteAgentConfigured) return "DeepSeek V4";
+  if (remoteAgentConfigured || directDeepSeekMode) return "DeepSeek V4";
   return staticAgentMode ? "演示模式" : "本地 AI";
 }
 

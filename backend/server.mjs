@@ -11,6 +11,7 @@ const staticFiles = new Map([
   ["/", ["frontend/public/index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["frontend/public/index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["frontend/public/app.js", "text/javascript; charset=utf-8"]],
+  ["/agent-core.js", ["backend/lib/agent-core.mjs", "text/javascript; charset=utf-8"]],
   ["/config.js", ["frontend/public/config.js", "text/javascript; charset=utf-8"]],
   ["/mock-agent.js", ["frontend/public/mock-agent.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["frontend/styles/globals.css", "text/css; charset=utf-8"]],
@@ -163,7 +164,7 @@ export function createServer(options = {}) {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
           "permissions-policy": "camera=(), microphone=(), geolocation=()",
-          "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+          "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://api.deepseek.com",
         });
         return response.end(body);
       } catch {

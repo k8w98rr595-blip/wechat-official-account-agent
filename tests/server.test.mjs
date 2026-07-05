@@ -24,6 +24,10 @@ test("服务健康检查、静态入口和 Mock Agent API 可用", async (t) => 
   assert.equal(staticAgent.status, 200);
   assert.match(await staticAgent.text(), /runStaticAgentOperation/);
 
+  const browserAgentCore = await fetch(`${base}/agent-core.js`);
+  assert.equal(browserAgentCore.status, 200);
+  assert.match(await browserAgentCore.text(), /runAgentOperation/);
+
   const interview = await fetch(`${base}/api/agent/interview`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ campaignType: "product", idea: "新品宣传", answers: [], brand: {} }) });
   assert.equal(interview.status, 200);
   assert.equal((await interview.json()).status, "question");

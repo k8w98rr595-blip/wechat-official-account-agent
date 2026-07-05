@@ -13,6 +13,7 @@ await mkdir(path.join(outputDir, "vendor"), { recursive: true });
 for (const [source, target] of [
   ["frontend/public/index.html", "index.html"],
   ["frontend/public/app.js", "app.js"],
+  ["backend/lib/agent-core.mjs", "agent-core.js"],
   ["frontend/public/mock-agent.js", "mock-agent.js"],
   ["frontend/styles/globals.css", "styles.css"],
   ["frontend/public/vendor/phosphor-regular.woff2", "vendor/phosphor-regular.woff2"],
