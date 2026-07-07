@@ -680,13 +680,33 @@ function renderSaasChrome() {
 async function showAccountMenu() {
   if (!saasEnabled) return openModal("当前工作区", '<div class="account-summary"><p>当前为个人本地模式，项目仅保存在这个浏览器中。</p></div>');
   const organizationRows = saasOrganizations.map((item) => `<div class="data-row"><div class="data-row-copy"><strong>${escapeHtml(item.organization.name)}</strong><small>${escapeHtml(item.role)}${item.organization.id === activeOrganizationId ? " · 当前" : ""}</small></div>${item.organization.id === activeOrganizationId ? "" : `<button class="button secondary" data-switch-organization="${item.organization.id}" type="button">切换</button>`}</div>`).join("");
-  openModal("账户与工作区", `<div class="account-summary"><dl><div><dt>姓名</dt><dd>${escapeHtml(saasUser?.name)}</dd></div><div><dt>邮箱</dt><dd>${escapeHtml(saasUser?.email)}</dd></div></dl><div class="data-list">${organizationRows}</div><button id="saas-logout" class="button secondary full" type="button">退出登录</button></div>`, (root) => {
+  openModal("账户与工作区", `<div class="account-summary"><dl><div><dt>姓名</dt><dd>${escapeHtml(saasUser?.name)}</dd></div><div><dt>邮箱</dt><dd>${escapeHtml(saasUser?.email)}</dd></div></dl><div class="data-list">${organizationRows}</div><form id="change-password-form" class="modal-form"><h3>修改密码</h3><label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" minlength="10" maxlength="128" required></label><label>新密码<input name="newPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required></label><label>确认新密码<input name="confirmPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required></label><button class="button primary full" type="submit">更新密码</button><p id="change-password-error" class="inline-warning" hidden></p></form><button id="saas-logout" class="button secondary full" type="button">退出登录</button></div>`, (root) => {
     $$('[data-switch-organization]', root).forEach((button) => button.addEventListener("click", async () => {
       await saveChain;
       activeOrganizationId = button.dataset.switchOrganization;
       sessionStorage.setItem("wechat-saas-organization", activeOrganizationId);
       await loadCloudWorkspace(); closeModal(); renderAll(); showToast("已切换企业工作区");
     }));
+    $("#change-password-form", root).addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const data = Object.fromEntries(new FormData(form));
+      const errorBox = $("#change-password-error", root);
+      errorBox.hidden = true;
+      if (data.newPassword !== data.confirmPassword) { errorBox.textContent = "两次输入的新密码不一致"; errorBox.hidden = false; return; }
+      const button = $('button[type="submit"]', form);
+      button.disabled = true;
+      try {
+        const result = await saasRequest("/change-password", { method: "POST", body: { currentPassword: data.currentPassword, newPassword: data.newPassword }, organization: false });
+        saasSessionToken = result.token;
+        sessionStorage.setItem("wechat-saas-session", saasSessionToken);
+        form.reset();
+        showToast("密码已更新，其他登录会话已退出");
+      } catch (error) {
+        errorBox.textContent = error instanceof Error ? error.message : "密码更新失败";
+        errorBox.hidden = false;
+      } finally { button.disabled = false; }
+    });
     $("#saas-logout", root).addEventListener("click", async () => {
       try { await saasRequest("/logout", { method: "POST", body: {}, organization: false }); } catch { /* local cleanup still applies */ }
       clearSaasSession(); location.reload();

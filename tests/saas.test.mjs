@@ -46,12 +46,18 @@ test("SaaS 注册、登录和会话不会暴露密码哈希", async (t) => {
   assert.equal(updated.status, 200);
   assert.equal(updated.body.user.name, "Updated Owner");
   assert.equal((await request(base, "/api/saas/profile", { method: "PATCH", token: login.body.token, body: { name: "Owner", platformAdmin: true } })).status, 400);
+  assert.equal((await request(base, "/api/saas/change-password", { method: "POST", token: login.body.token, body: { currentPassword: "wrong-pass-2026", newPassword: "new-strong-pass-2026" } })).status, 401);
+  const changed = await request(base, "/api/saas/change-password", { method: "POST", token: login.body.token, body: { currentPassword: "strong-pass-2026", newPassword: "new-strong-pass-2026" } });
+  assert.equal(changed.status, 200);
+  assert.equal((await request(base, "/api/saas/me", { token: login.body.token })).status, 401);
+  assert.equal((await request(base, "/api/saas/login", { method: "POST", body: { email: "owner@example.com", password: "strong-pass-2026" } })).status, 401);
+  assert.equal((await request(base, "/api/saas/login", { method: "POST", body: { email: "owner@example.com", password: "new-strong-pass-2026" } })).status, 200);
   const stored = service.store.getUserByEmail("owner@example.com");
   assert.match(stored.password_hash, /^scrypt\$/);
-  assert.equal(stored.password_hash.includes("strong-pass-2026"), false);
+  assert.equal(stored.password_hash.includes("new-strong-pass-2026"), false);
 
-  assert.equal((await request(base, "/api/saas/logout", { method: "POST", token: login.body.token, body: {} })).status, 200);
-  assert.equal((await request(base, "/api/saas/me", { token: login.body.token })).status, 401);
+  assert.equal((await request(base, "/api/saas/logout", { method: "POST", token: changed.body.token, body: {} })).status, 200);
+  assert.equal((await request(base, "/api/saas/me", { token: changed.body.token })).status, 401);
 });
 
 test("平台管理员邮箱必须同时提供正确的初始化码", async (t) => {

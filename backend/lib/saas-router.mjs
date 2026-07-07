@@ -12,6 +12,7 @@ export async function routeSaasRequest({ request, url, service, readJson }) {
   if (method === "POST" && path === "/api/saas/logout") { service.logout(token); return { status: 200, body: { ok: true } }; }
   if (method === "GET" && path === "/api/saas/me") return { status: 200, body: service.me(token) };
   if (method === "PATCH" && path === "/api/saas/profile") return { status: 200, body: service.updateProfile(token, await readJson(request)) };
+  if (method === "POST" && path === "/api/saas/change-password") return { status: 200, body: await service.changePassword(token, await readJson(request)) };
 
   if (method === "GET" && path === "/api/saas/organization") return { status: 200, body: service.organization(token, orgId) };
   if (method === "PATCH" && path === "/api/saas/organization") return { status: 200, body: service.updateOrganization(token, orgId, await readJson(request)) };

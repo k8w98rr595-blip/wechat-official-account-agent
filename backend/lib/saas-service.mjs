@@ -172,6 +172,19 @@ export class SaasService {
     return { user: this.store.updateUserName(auth.user.id, text(value.name, "name", { min: 2, max: 60 })) };
   }
 
+  async changePassword(rawToken, payload) {
+    const auth = this.authenticate(rawToken);
+    const value = object(payload, "password change");
+    allowed(value, ["currentPassword", "newPassword"], "password change");
+    const currentPassword = typeof value.currentPassword === "string" ? value.currentPassword : "";
+    const newPassword = password(value.newPassword);
+    const user = this.store.getUserById(auth.user.id);
+    if (!user || !(await verifyPassword(currentPassword, user.password_hash))) throw saasError("INVALID_CREDENTIALS", "当前密码错误", 401);
+    if (currentPassword === newPassword) throw saasError("INVALID_INPUT", "新密码不能与当前密码相同");
+    this.store.updatePasswordHash(auth.user.id, await hashPassword(newPassword));
+    return this.issueSession(auth.user.id);
+  }
+
   organization(rawToken, organizationId) {
     const context = this.context(rawToken, organizationId);
     const organization = this.store.getOrganization(context.organizationId);

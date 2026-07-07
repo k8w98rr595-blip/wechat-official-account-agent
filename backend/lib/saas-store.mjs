@@ -235,6 +235,15 @@ export class SaasStore {
     return publicUser(this.getUserById(userId));
   }
 
+  updatePasswordHash(userId, passwordHash) {
+    return this.transaction(() => {
+      const timestamp = nowIso();
+      this.db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(passwordHash, timestamp, userId);
+      this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+      this.audit({ actorUserId: userId, event: "user.password_changed", targetType: "user", targetId: userId });
+    });
+  }
+
   createSession(userId, tokenHash, expiresAt) {
     const timestamp = nowIso();
     this.db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
